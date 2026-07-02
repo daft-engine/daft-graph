@@ -3,13 +3,13 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "daft-ext-template"  # Choose a name for the package!
-description = "..."  # Add a description for the package
-dependencies = ["daft>=0.7.5"]  # Add additional dependencies here
+name = "daft-graph"
+description = "Graph processing algorithms using Daft under the hood."
+dependencies = ["daft>=0.7.5"]
 dynamic = ["version"]
 license = "Apache-2.0"
-authors = []  # Add authors, especially if it differs from maintainers
-maintainers = []  # Add maintainers
+authors = []
+maintainers = []
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 
@@ -27,7 +27,7 @@ dev = [
 source = "vcs"
 
 [tool.mypy]
-files = ["daft_ext_template/**/*.py", "tests/**/*.py"]
+files = ["daft_graph/**/*.py", "tests/**/*.py"]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
