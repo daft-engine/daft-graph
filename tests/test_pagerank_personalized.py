@@ -1,0 +1,75 @@
+"""Tests for personalized PageRank against networkx."""
+
+from __future__ import annotations
+
+import random
+
+import daft
+import networkx as nx
+import pytest
+
+from daft_graph.algorithms.pagerank import pagerank
+from daft_graph.graph import DirectedGraph
+from daft_graph.schema import DST, ID, RANK, SRC
+
+
+def _graph(node_ids: list[int], edges: list[tuple[int, int]]) -> DirectedGraph:
+    vertices = daft.from_pydict({ID: node_ids})
+    edges_df = daft.from_pydict({SRC: [u for u, _ in edges], DST: [v for _, v in edges]})
+    return DirectedGraph(vertices=vertices, edges=edges_df)
+
+
+def _our(g: DirectedGraph, sources: list[int]) -> dict:
+    d = pagerank(g, damping=0.85, tol=1e-10, max_iters=300, source_ids=sources).collect().to_pydict()
+    return dict(zip(d[ID], d[RANK]))
+
+
+def _nx(node_ids: list[int], edges: list[tuple[int, int]], sources: list[int]) -> dict:
+    graph = nx.DiGraph()
+    graph.add_nodes_from(node_ids)
+    graph.add_edges_from(edges)
+    personalization = {s: 1.0 for s in sources}
+    return nx.pagerank(graph, alpha=0.85, personalization=personalization, tol=1e-12, max_iter=1000)
+
+
+def _random_directed_edges(n_nodes: int, n_edges: int, seed: int) -> list[tuple[int, int]]:
+    rng = random.Random(seed)
+    edges: set[tuple[int, int]] = set()
+    while len(edges) < n_edges:
+        u = rng.randint(0, n_nodes - 1)
+        v = rng.randint(0, n_nodes - 1)
+        if u != v:
+            edges.add((u, v))
+    return sorted(edges)
+
+
+def test_single_source_matches_networkx() -> None:
+    node_ids = list(range(6))
+    edges = _random_directed_edges(6, 10, 1)
+    ours = _our(_graph(node_ids, edges), [0])
+    theirs = _nx(node_ids, edges, [0])
+    for nid in node_ids:
+        assert abs(ours[nid] - theirs[nid]) < 1e-4
+
+
+@pytest.mark.parametrize(("seed", "sources"), [(2, [0, 3]), (3, [1]), (4, [2, 4, 5])])
+def test_personalized_matches_networkx(seed: int, sources: list[int]) -> None:
+    node_ids = list(range(8))
+    edges = _random_directed_edges(8, 16, seed)
+    ours = _our(_graph(node_ids, edges), sources)
+    theirs = _nx(node_ids, edges, sources)
+    for nid in node_ids:
+        assert abs(ours[nid] - theirs[nid]) < 1e-4
+
+
+def test_personalized_ranks_sum_to_one() -> None:
+    node_ids = list(range(10))
+    edges = _random_directed_edges(10, 18, 5)
+    ranks = _our(_graph(node_ids, edges), [0, 1])
+    assert abs(sum(ranks.values()) - 1.0) < 1e-6
+
+
+def test_empty_sources_raises() -> None:
+    g = _graph([0, 1, 2], [(0, 1), (1, 2)])
+    with pytest.raises(ValueError):
+        pagerank(g, source_ids=[]).collect()

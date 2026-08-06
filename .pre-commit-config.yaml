@@ -38,7 +38,7 @@ repos:
   rev: v2.1.0
   hooks:
   - id: mypy                           # Static type checker for Python
-    additional_dependencies: [daft>=0.7.5]
+    additional_dependencies: [daft>=0.7.5, typing_extensions]
 
   # Check that uv.lock is up to date with pyproject.toml
 - repo: https://github.com/astral-sh/uv-pre-commit
