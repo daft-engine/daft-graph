@@ -2,9 +2,11 @@
 
 ``Graph`` is abstract. Construct a :class:`DirectedGraph` or an
 :class:`UndirectedGraph` instead, so the type carries the direction semantics and
-an algorithm can say which flavor it needs. Algorithms that traverse edges read
-:meth:`Graph._traversal_edges`, which is the edge set as given for a directed
-graph and the symmetrized edge set for an undirected one.
+an algorithm can say which flavor it needs. Algorithms that walk edges call
+:meth:`Graph.orient` on the edge frame they want to traverse, which returns it
+unchanged for a directed graph and symmetrized for an undirected one, so one
+implementation serves both flavors. :meth:`Graph.traversal_edges` is the
+shorthand for orienting the whole edge set.
 
 Incoming column names are normalized on construction. The ``src_col``,
 ``dst_col``, and ``id_col`` arguments describe the frames handed in, not the
@@ -164,22 +166,41 @@ class Graph(ABC):
 
     @property
     @abstractmethod
-    def _directed(self) -> bool:
-        """Whether edge direction is meaningful for this graph."""
+    def is_directed(self) -> bool:
+        """Whether edge direction is meaningful for this graph.
 
-    def _orient(self, edges: DataFrame) -> DataFrame:
+        True for :class:`DirectedGraph`, False for :class:`UndirectedGraph`.
+        """
+
+    def orient(self, edges: DataFrame) -> DataFrame:
         """Orient an edge frame per this graph's direction semantics.
 
-        Takes the frame rather than reading ``self.edges`` so callers can filter
-        or project first and still get the right orientation applied afterwards.
-        ``symmetrize`` preserves edge attribute columns, so an undirected
-        traversal keeps the same schema it was given.
-        """
-        return edges if self._directed else symmetrize(edges)
+        The extension hook for algorithm authors: an algorithm that walks edges
+        calls this instead of branching on the graph's type, and it then works for
+        both flavors. A directed graph returns the frame unchanged; an undirected
+        graph returns it symmetrized, preserving edge attribute columns so the
+        schema is unchanged.
 
-    def _traversal_edges(self) -> DataFrame:
-        """The whole edge set, oriented per this graph's direction semantics."""
-        return self._orient(self._edges)
+        It takes the frame rather than reading :attr:`edges` so a caller can
+        filter or project first and still get the orientation applied afterwards.
+        That ordering matters: filtering after symmetrizing would keep reversed
+        copies of edges the filter was meant to remove.
+
+        Args:
+            edges: The edge frame to orient, usually derived from :attr:`edges`.
+
+        Returns:
+            The frame oriented for traversal.
+        """
+        return edges if self.is_directed else symmetrize(edges)
+
+    def traversal_edges(self) -> DataFrame:
+        """The whole edge set, oriented per this graph's direction semantics.
+
+        Shorthand for ``graph.orient(graph.edges)``. Use :meth:`orient` directly
+        when the edges need filtering or projecting first.
+        """
+        return self.orient(self._edges)
 
     def degrees(self) -> DataFrame:
         """Total degree per vertex, as columns ``id`` and ``degree``.
@@ -282,7 +303,7 @@ class DirectedGraph(Graph):
     __slots__ = ()
 
     @property
-    def _directed(self) -> bool:
+    def is_directed(self) -> bool:
         """Directed traversal walks the edges as given."""
         return True
 
@@ -339,7 +360,7 @@ class UndirectedGraph(Graph):
 
     Edges are stored exactly as handed in, one row per edge, so ``num_edges`` and
     ``degrees`` count each edge once. Direction is dropped at traversal time by
-    :meth:`_traversal_edges`, which symmetrizes, rather than by duplicating the
+    :meth:`traversal_edges`, which symmetrizes, rather than by duplicating the
     stored rows.
 
     Example:
@@ -352,7 +373,7 @@ class UndirectedGraph(Graph):
     __slots__ = ()
 
     @property
-    def _directed(self) -> bool:
+    def is_directed(self) -> bool:
         """Undirected traversal walks both orientations of every edge."""
         return False
 

@@ -26,7 +26,7 @@ from daft_graph._compare import rows_equal
 from daft_graph._optional import has_local_extra, require_numpy, require_scipy
 from daft_graph.edges import canonicalize, symmetrize
 from daft_graph.graph import Graph
-from daft_graph.iterate import iterate_to_fixed_point
+from daft_graph.iterate import bound_partitions, collect_bounded, iterate_to_fixed_point
 from daft_graph.schema import COMPONENT, DST, ID, SRC, Strategy
 
 _NBRS = "nbrs"
@@ -79,8 +79,15 @@ def small_star(edges: DataFrame) -> DataFrame:
 
 
 def _star_step(edges: DataFrame) -> DataFrame:
-    """One alternating round: large star followed by small star."""
-    return small_star(large_star(edges))
+    """One alternating round: large star followed by small star.
+
+    The large star result is partition capped before the small star pass reads
+    it, so the two passes' shuffles do not stack into an ever growing grid (each
+    pass symmetrizes or unions, and Daft's shuffles inherit their input's
+    partition count). The cap is a plan rewrite, not a materialization, so it
+    adds no distributed round trip per round.
+    """
+    return small_star(bound_partitions(large_star(edges)))
 
 
 def _canonical_equal(prev: DataFrame, nxt: DataFrame) -> bool:
@@ -121,11 +128,14 @@ def _propagate_min_labels(
     After star contraction that set is typically small, but a very large
     contracted graph will materialize here.
     """
-    adjacency = symmetrize(edges).collect()
+    adjacency = collect_bounded(symmetrize(edges))
 
     def step(labels: DataFrame) -> DataFrame:
         neighbor_labels = labels.select(col(ID).alias(DST), col(COMPONENT).alias(_NBR))
-        nbr_min = (
+        # Cap the per-neighbor minimum before the second join so the two joins
+        # and the aggregation between them cannot stack their shuffle partitions.
+        # A plan rewrite, so it costs no extra execution per round.
+        nbr_min = bound_partitions(
             adjacency.join(neighbor_labels, on=DST, how="left")
             .groupby(SRC)
             .agg(col(_NBR).min().alias(_NBR_MIN))

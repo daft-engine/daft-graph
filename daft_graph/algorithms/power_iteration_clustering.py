@@ -15,6 +15,7 @@ from daft import col
 
 from daft_graph.edges import canonicalize, symmetrize
 from daft_graph.graph import Graph
+from daft_graph.iterate import collect_bounded
 from daft_graph.message_passing import MSG, VALUE, aggregate_messages
 from daft_graph.schema import DST, ID, SRC
 
@@ -63,7 +64,12 @@ def power_iteration_clustering(
         kmeans_iters: Maximum 1D k-means iterations.
 
     Returns:
-        A DataFrame ``[id, cluster]`` over the vertices that have edges.
+        A DataFrame ``[id, cluster]`` over the vertices that have edges. Vertices
+        with no incident edge are absent from the output rather than forming
+        singleton clusters.
+
+    Raises:
+        ValueError: If ``k`` is less than 1.
 
     Note:
         With the degree based initialization, perfectly symmetric communities
@@ -72,7 +78,7 @@ def power_iteration_clustering(
     """
     if k < 1:
         raise ValueError(f"k must be >= 1, got {k}")
-    undirected = symmetrize(canonicalize(graph.edges)).collect()
+    undirected = collect_bounded(symmetrize(canonicalize(graph.edges)))
     degree_rows = (
         undirected.groupby(SRC)
         .agg(col(DST).count().alias(_DEG))

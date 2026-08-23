@@ -22,6 +22,7 @@ from daft import DataFrame, Series, col, lit
 from daft.functions import list_agg
 
 from daft_graph.graph import Graph
+from daft_graph.iterate import bound_partitions, collect_bounded
 from daft_graph.message_passing import MSG, aggregate_messages
 from daft_graph.schema import DST, ID, SRC
 
@@ -104,8 +105,8 @@ def hyper_anf(
             out.append(raw)
         return out
 
-    edges = graph._orient(graph.edges.select(SRC, DST))
-    edges = edges.collect()
+    edges = graph.orient(graph.edges.select(SRC, DST))
+    edges = collect_bounded(edges)
 
     current = graph.vertices.select(col(ID)).distinct().with_column(_HLL, init_hll(col(ID))).collect()
 
@@ -119,15 +120,14 @@ def hyper_anf(
     parts = [snapshot(current, 0)]
     for hop in range(1, max_hops + 1):
         msg = aggregate_messages(edges, current, to_src=col(f"dst_{_HLL}"), agg=lambda values: list_agg(values))
-        current = (
-            current.join(msg, on=ID, how="left")
-            .with_column(_HLL, merge_hll(col(_HLL), col(MSG)))
-            .select(ID, _HLL)
-            .collect()
+        # Bound the carried HLL state: it is joined against edges every hop and a
+        # plain collect keeps the join's inherited partition count, compounding.
+        current = collect_bounded(
+            current.join(msg, on=ID, how="left").with_column(_HLL, merge_hll(col(_HLL), col(MSG))).select(ID, _HLL)
         )
         parts.append(snapshot(current, hop))
 
     out = parts[0]
     for part in parts[1:]:
         out = out.union_all(part)
-    return out
+    return bound_partitions(out)

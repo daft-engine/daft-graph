@@ -67,7 +67,7 @@ def test_degrees_is_in_plus_out() -> None:
 
 def test_traversal_edges_are_unchanged() -> None:
     g = DirectedGraph(_edges())
-    assert g._traversal_edges().count_rows() == g.num_edges()
+    assert g.traversal_edges().count_rows() == g.num_edges()
 
 
 def test_reverse_flips_every_edge() -> None:

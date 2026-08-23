@@ -18,7 +18,7 @@ from collections.abc import Callable
 from daft import DataFrame, Expression, col
 
 from daft_graph._compare import rows_equal
-from daft_graph.iterate import ConvergedFn, iterate_to_fixed_point
+from daft_graph.iterate import ConvergedFn, bound_partitions, iterate_to_fixed_point
 from daft_graph.schema import DST, ID, SRC
 
 VALUE = "value"
@@ -32,14 +32,21 @@ def _default_agg(msg: Expression) -> Expression:
 
 
 def _triplets(edges: DataFrame, state: DataFrame) -> DataFrame:
-    """Join vertex state onto both endpoints, prefixing columns src_ and dst_."""
+    """Join vertex state onto both endpoints, prefixing columns src_ and dst_.
+
+    The result is partition capped: this is two chained joins, and Daft resolves a
+    shuffle's output partition count to its input's count without ever lowering
+    it, so an uncapped triplet frame would carry a growing count into every
+    message shuffle of every round. The cap is a plan rewrite, not an execution.
+    """
     state_cols = [c for c in state.column_names if c != ID]
     reserved = [c for c in state_cols if c.startswith(("src_", "dst_"))]
     if reserved:
         raise ValueError(f"state columns must not start with 'src_' or 'dst_': {reserved}")
     src_state = state.select(col(ID).alias(SRC), *[col(c).alias(f"src_{c}") for c in state_cols])
     dst_state = state.select(col(ID).alias(DST), *[col(c).alias(f"dst_{c}") for c in state_cols])
-    return edges.join(src_state, on=SRC, how="inner").join(dst_state, on=DST, how="inner")
+    joined = edges.join(src_state, on=SRC, how="inner").join(dst_state, on=DST, how="inner")
+    return bound_partitions(joined)
 
 
 def aggregate_messages(
@@ -78,7 +85,9 @@ def aggregate_messages(
     combined = parts[0]
     for part in parts[1:]:
         combined = combined.union_all(part)
-    return combined.groupby(ID).agg(aggregator(col(MSG)).alias(MSG))
+    # union_all sums its inputs' partition counts, so cap before the aggregation
+    # shuffle inherits that sum. Plan rewrite only, no execution.
+    return bound_partitions(combined).groupby(ID).agg(aggregator(col(MSG)).alias(MSG))
 
 
 def pregel(
@@ -120,7 +129,7 @@ def pregel(
     extra_cols = [c for c in init_state.column_names if c not in (ID, VALUE)]
 
     def step(state: DataFrame) -> DataFrame:
-        msgs = aggregate_messages(edges, state, to_src=to_src, to_dst=to_dst, agg=agg)
+        msgs = bound_partitions(aggregate_messages(edges, state, to_src=to_src, to_dst=to_dst, agg=agg))
         return state.join(msgs, on=ID, how="left").select(col(ID), update.alias(VALUE), *[col(c) for c in extra_cols])
 
     converged_fn = converged or (lambda prev, nxt: rows_equal(prev, nxt, [ID, VALUE]))

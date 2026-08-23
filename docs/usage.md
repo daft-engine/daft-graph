@@ -394,12 +394,13 @@ DAFT_RUNNER=ray python my_job.py
 
 ```python
 import daft
-daft.context.set_runner_ray()
+daft.set_runner_ray()
 ```
 
 ## Reading from Iceberg
 
-Install the `iceberg` extra and read an edge table directly:
+Install Daft's `iceberg` extra (`pip install 'daft[iceberg]'`) and read an edge table
+directly. daft-graph itself needs no extra for this:
 
 ```python
 import daft
@@ -438,5 +439,7 @@ that mypy catches, which is the point of the split.
   needs the `local` extra installed.
 - Benchmark with `benchmarks/bench_cc.py --edges 1000000`.
 - Edgeless graphs are handled: every vertex forms its own component or community,
-  and PageRank returns the uniform distribution. Iterative algorithms emit a
-  warning if they reach `max_iters` without converging.
+  and PageRank returns the uniform distribution. The exception is
+  `power_iteration_clustering`, which only returns vertices that have edges.
+  Iterative algorithms emit a warning if they reach `max_iters` without
+  converging.

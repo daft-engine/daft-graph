@@ -16,6 +16,7 @@ from daft.functions import list_agg
 
 from daft_graph.edges import symmetrize
 from daft_graph.graph import Graph
+from daft_graph.iterate import collect_bounded
 from daft_graph.message_passing import MSG, VALUE, pregel
 from daft_graph.schema import ID, LABEL
 
@@ -56,7 +57,9 @@ def label_propagation(
     base = graph.vertices.select(col(ID), col(ID).alias(VALUE)).distinct()
     if graph.edges.count_rows() == 0:
         return base.select(col(ID), col(VALUE).alias(LABEL))
-    undirected = symmetrize(graph.edges)
+    # Materialized before the pregel closure so the symmetrize is not replanned
+    # every round.
+    undirected = collect_bounded(symmetrize(graph.edges))
     final = pregel(
         undirected,
         base,

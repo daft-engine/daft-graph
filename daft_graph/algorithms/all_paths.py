@@ -12,6 +12,7 @@ from daft import Expression
 
 from daft_graph.algorithms._traversal import neighbors, prepare_edges
 from daft_graph.graph import Graph
+from daft_graph.iterate import collect_bounded
 
 
 def all_paths(
@@ -39,12 +40,21 @@ def all_paths(
         A sorted list of paths, each a list of vertex ids from source to target.
         If source == target the single trivial path ``[source]`` is returned.
 
+    Note:
+        The search is driver mediated: each hop pulls the current frontier's
+        adjacency into the driver process, and the returned paths are Python
+        objects. Frontier width is not bounded by ``max_path_length``, so on a
+        large well connected graph the frontier can reach a sizeable fraction of
+        the graph within a few hops. Keep the hop count tight, narrow the search
+        with ``edge_filter``, or use :func:`daft_graph.shortest_paths` (which
+        stays in Daft) for whole graph distances.
+
     Raises:
         ValueError: if the partial path frontier exceeds ``max_paths``.
     """
     if source == target:
         return [[source]]
-    edges = prepare_edges(graph, edge_filter=edge_filter)
+    edges = collect_bounded(prepare_edges(graph, edge_filter=edge_filter))
 
     frontier: list[list[int]] = [[source]]
     results: list[tuple[int, ...]] = []

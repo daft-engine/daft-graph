@@ -23,6 +23,7 @@ from daft_graph.algorithms.connected_components import (
     _resolve_strategy,
 )
 from daft_graph.graph import DirectedGraph
+from daft_graph.iterate import bound_partitions, collect_bounded
 from daft_graph.message_passing import MSG as _MSG
 from daft_graph.message_passing import VALUE, pregel
 from daft_graph.schema import COMPONENT, DST, ID, SRC, Strategy
@@ -61,7 +62,7 @@ def _distributed_scc(
     repeats on the rest. The final labels are remapped to the minimum id per SCC.
     """
     active_v = graph.vertices.select(ID).distinct().collect()
-    active_e = graph.edges.select(SRC, DST).distinct().collect()
+    active_e = collect_bounded(graph.edges.select(SRC, DST).distinct())
     parts: list[DataFrame] = []
     for outer in range(active_v.count_rows() + 1):
         if active_v.count_rows() == 0:
@@ -114,11 +115,15 @@ def _distributed_scc(
         )
         confirmed = flags.where(col(VALUE) == lit(1)).select(col(ID), col(_COLOR).alias(COMPONENT)).collect()
         parts.append(confirmed)
-        active_v = active_v.join(confirmed.select(ID), on=ID, how="anti").collect()
-        active_e = (
-            active_e.join(active_v.select(col(ID).alias(SRC)), on=SRC, how="semi")
-            .join(active_v.select(col(ID).alias(DST)), on=DST, how="semi")
-            .collect()
+        # Bound the carried state each outer round: active_v/active_e are joined
+        # and fed to the inner pregels every round, and a plain collect keeps the
+        # growing partition count from the anti/semi joins, which then compounds
+        # through the pregel shuffles. Cap is a plan rewrite, no extra execution.
+        active_v = collect_bounded(active_v.join(confirmed.select(ID), on=ID, how="anti"))
+        active_e = collect_bounded(
+            active_e.join(active_v.select(col(ID).alias(SRC)), on=SRC, how="semi").join(
+                active_v.select(col(ID).alias(DST)), on=DST, how="semi"
+            )
         )
     if active_v.count_rows() > 0:
         warnings.warn(
@@ -130,6 +135,8 @@ def _distributed_scc(
     out = parts[0]
     for part in parts[1:]:
         out = out.union_all(part)
+    # The fold sums each part's partition count; cap before the groupby shuffle.
+    out = bound_partitions(out)
     # The coloring uses max id roots; remap to the min id in each component.
     min_label = out.groupby(COMPONENT).agg(col(ID).min().alias(_MIN))
     return out.join(min_label, on=COMPONENT, how="inner").select(col(ID), col(_MIN).alias(COMPONENT))

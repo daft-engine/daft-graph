@@ -17,7 +17,7 @@ from daft import DataFrame, col, lit
 from daft.functions import when
 
 from daft_graph.graph import DirectedGraph
-from daft_graph.iterate import iterate_to_fixed_point
+from daft_graph.iterate import collect_bounded, iterate_to_fixed_point
 from daft_graph.message_passing import MSG, aggregate_messages
 from daft_graph.schema import DST, ID, RANK, SRC
 
@@ -81,6 +81,10 @@ def pagerank(
 
     Returns:
         A DataFrame with one row per vertex: ``id`` and its ``rank``.
+
+    Raises:
+        ValueError: If ``source_ids`` is given but contains no vertex present in
+            the graph.
     """
     vertices = graph.vertices.select(ID).distinct().collect()
     n = vertices.count_rows()
@@ -88,11 +92,11 @@ def pagerank(
         return vertices.with_column(RANK, lit(0.0))
 
     pvec = _personalization(vertices, n, source_ids)
-    edges = graph.edges.select(SRC, DST).distinct().collect()
+    edges = collect_bounded(graph.edges.select(SRC, DST).distinct())
     if edges.count_rows() == 0:
         return pvec.select(col(ID), col(_P).alias(RANK))
 
-    outdeg = (edges.groupby(SRC).agg(col(DST).count().alias(_OD)).select(col(SRC).alias(ID), col(_OD))).collect()
+    outdeg = collect_bounded(edges.groupby(SRC).agg(col(DST).count().alias(_OD)).select(col(SRC).alias(ID), col(_OD)))
     dangling_ids = vertices.join(outdeg.select(col(ID)), on=ID, how="anti").collect()
     init = vertices.with_column(RANK, lit(1.0 / n))
 

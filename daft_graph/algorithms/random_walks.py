@@ -38,7 +38,7 @@ def random_walks(
     Neighbor lists are sorted before walking, so the result depends only on
     ``seed`` regardless of the edge row order Daft returns.
     """
-    edges = graph._orient(graph.edges.select(SRC, DST))
+    edges = graph.orient(graph.edges.select(SRC, DST))
     rows = edges.distinct().collect().to_pydict()
     adjacency: dict[int, list[int]] = defaultdict(list)
     for s, d in zip(rows[SRC], rows[DST]):

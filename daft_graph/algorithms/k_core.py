@@ -14,6 +14,7 @@ from daft.functions import list_agg, when
 
 from daft_graph.edges import canonicalize, symmetrize
 from daft_graph.graph import Graph
+from daft_graph.iterate import collect_bounded
 from daft_graph.message_passing import MSG, VALUE, pregel
 from daft_graph.schema import DST, ID, SRC
 
@@ -36,17 +37,32 @@ def _h_index(neighbor_cores: daft.Series) -> list[int]:
     return out
 
 
-def k_core(graph: Graph, *, max_iters: int = 100) -> DataFrame:
+def k_core(
+    graph: Graph,
+    *,
+    max_iters: int = 100,
+    materialize_every: int = 1,
+    checkpoint_dir: str | None = None,
+) -> DataFrame:
     """Compute the core number of each vertex (undirected).
 
     Accepts either graph flavor; edges are treated as undirected either way.
 
-    Returns a DataFrame with one row per vertex: ``id`` and ``core``.
+    Args:
+        graph: The graph to analyze.
+        max_iters: Maximum relaxation rounds.
+        materialize_every: How often to truncate the Daft plan between rounds.
+        checkpoint_dir: Optional parquet checkpoint directory for long runs.
+
+    Returns:
+        A DataFrame with one row per vertex: ``id`` and ``core``.
     """
     all_v = graph.vertices.select(ID).distinct()
     if graph.edges.count_rows() == 0:
         return all_v.with_column(CORE, lit(0)).select(ID, CORE)
-    undirected = symmetrize(canonicalize(graph.edges))
+    # Materialized once: this feeds both the degree init and the pregel step
+    # closure, which would otherwise replan the canonicalize+symmetrize every round.
+    undirected = collect_bounded(symmetrize(canonicalize(graph.edges)))
     degree = undirected.groupby(SRC).agg(col(DST).count().alias(VALUE)).select(col(SRC).alias(ID), col(VALUE))
     init = all_v.join(degree, on=ID, how="left").with_column(
         VALUE, when(col(VALUE).is_null(), lit(0)).otherwise(col(VALUE))
@@ -58,5 +74,7 @@ def k_core(graph: Graph, *, max_iters: int = 100) -> DataFrame:
         agg=lambda m: list_agg(m),
         update=_h_index(col(MSG)),
         max_iters=max_iters,
+        materialize_every=materialize_every,
+        checkpoint_dir=checkpoint_dir,
     )
     return final.select(col(ID), col(VALUE).alias(CORE))

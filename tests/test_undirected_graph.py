@@ -44,13 +44,13 @@ def test_self_loop_contributes_two() -> None:
 
 def test_traversal_edges_are_symmetrized() -> None:
     g = UndirectedGraph(daft.from_pydict({SRC: [1], DST: [2]}))
-    t = g._traversal_edges().collect().to_pydict()
+    t = g.traversal_edges().collect().to_pydict()
     assert sorted(zip(t[SRC], t[DST])) == [(1, 2), (2, 1)]
 
 
 def test_traversal_reaches_both_endpoints() -> None:
     g = UndirectedGraph(daft.from_pydict({SRC: [1, 2], DST: [2, 3]}))
-    t = g._traversal_edges().collect().to_pydict()
+    t = g.traversal_edges().collect().to_pydict()
     pairs = set(zip(t[SRC], t[DST]))
     # every stored edge is walkable in both directions
     assert {(1, 2), (2, 1), (2, 3), (3, 2)} == pairs
@@ -59,7 +59,7 @@ def test_traversal_reaches_both_endpoints() -> None:
 def test_stored_edges_are_not_duplicated_by_traversal() -> None:
     g = UndirectedGraph(_edges())
     assert g.edges.count_rows() == 4
-    assert g._traversal_edges().count_rows() == 8
+    assert g.traversal_edges().count_rows() == 8
 
 
 def test_as_directed_returns_directed_graph() -> None:

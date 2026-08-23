@@ -1,23 +1,31 @@
 """Breadth first search and shortest path enumeration on Daft DataFrames.
 
-``bfs`` returns one shortest path between two vertices; ``all_shortest_paths``
-returns every shortest path. Both expand the BFS frontier one hop at a time,
-using Daft to look up the frontier's out neighbors, and accept an optional
-``edge_filter`` predicate over the edge columns. ``bfs`` breaks ties toward the
-smaller predecessor id for determinism.
+``bfs`` returns one shortest path between two vertices, ``all_shortest_paths``
+returns every shortest path, and ``bfs_paths`` is the GraphFrames style search
+between two vertex sets. All expand the frontier inside Daft (see
+:func:`daft_graph.algorithms._traversal.bfs_levels`), so the search itself does
+not pull the graph into the driver; only the resulting paths do, bounded by
+``max_paths``. All accept an optional ``edge_filter`` predicate over the edge
+columns. ``bfs`` breaks ties toward the smaller predecessor id for determinism.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import Any
 
 import daft
-from daft import DataFrame, Expression, col
+from daft import DataFrame, Expression, col, lit
 from daft.functions import to_struct
 
-from daft_graph.algorithms._traversal import neighbors, prepare_edges
+from daft_graph.algorithms._traversal import (
+    DIST,
+    bfs_levels,
+    min_predecessor,
+    prepare_edges,
+    prune_to_dag,
+)
 from daft_graph.graph import Graph
+from daft_graph.iterate import collect_bounded
 from daft_graph.schema import DST, ID, SRC
 
 
@@ -42,32 +50,31 @@ def bfs(
     Returns:
         The list of vertex ids on a shortest path (both ends inclusive), or None
         if the target is not reachable within ``max_path_length`` hops.
+
+    Note:
+        The frontier is expanded inside Daft, so the search does not pull the
+        graph into the driver. Only the returned path itself crosses back, one
+        small lookup per hop, bounded by ``max_path_length``.
     """
     if source == target:
         return [source]
-    edges = prepare_edges(graph, edge_filter=edge_filter)
-    pred: dict[int, int] = {}
-    visited: set[int] = {source}
-    frontier: list[int] = [source]
-    for _ in range(max_path_length):
-        if not frontier:
-            break
-        adjacency = neighbors(edges, frontier)
-        layer_pred: dict[int, int] = {}
-        for s in frontier:
-            for d in adjacency.get(s, []):
-                if d not in visited and (d not in layer_pred or s < layer_pred[d]):
-                    layer_pred[d] = s
-        for d, s in layer_pred.items():
-            visited.add(d)
-            pred[d] = s
-        if target in visited:
-            path = [target]
-            while path[-1] != source:
-                path.append(pred[path[-1]])
-            return list(reversed(path))
-        frontier = sorted(layer_pred)
-    return None
+    edges = collect_bounded(prepare_edges(graph, edge_filter=edge_filter))
+    levels, depth = bfs_levels(
+        edges,
+        daft.from_pydict({ID: [source]}),
+        max_hops=max_path_length,
+        targets=daft.from_pydict({ID: [target]}),
+    )
+    if depth is None or levels is None:
+        return None
+    # Walk the predecessor records back from the target, taking the smallest
+    # predecessor at each hop so the chosen path is deterministic.
+    path = [target]
+    current = target
+    for dist in range(depth, 0, -1):
+        current = min_predecessor(levels, current, dist)
+        path.append(current)
+    return list(reversed(path))
 
 
 def all_shortest_paths(
@@ -86,38 +93,28 @@ def all_shortest_paths(
     list if the target is unreachable within ``max_path_length`` hops, or
     ``[[source]]`` when source == target.
 
+    Note:
+        The frontier is expanded inside Daft, and only the shortest path sub DAG
+        is brought back to enumerate paths from. The returned paths are Python
+        lists, so ``max_paths`` bounds what crosses into the driver.
+
     Raises:
-        ValueError: if the working set of partial paths exceeds ``max_paths``
+        ValueError: if the number of shortest paths exceeds ``max_paths``
             (a guard against exponential blow up on dense graphs).
     """
     if source == target:
         return [[source]]
-    edges = prepare_edges(graph, edge_filter=edge_filter)
-    frontier: list[list[int]] = [[source]]
-    for _ in range(max_path_length):
-        if not frontier:
-            break
-        if len(frontier) > max_paths:
-            raise ValueError(
-                f"partial path frontier exceeded max_paths={max_paths}; reduce max_path_length or raise max_paths"
-            )
-        endpoints = sorted({path[-1] for path in frontier})
-        adjacency = neighbors(edges, endpoints)
-        found: list[tuple[int, ...]] = []
-        nxt: list[list[int]] = []
-        for path in frontier:
-            for neighbor in adjacency.get(path[-1], []):
-                if neighbor in path:
-                    continue
-                extended = path + [neighbor]
-                if neighbor == target:
-                    found.append(tuple(extended))
-                else:
-                    nxt.append(extended)
-        if found:
-            return [list(path) for path in sorted(set(found))]
-        frontier = nxt
-    return []
+    edges = collect_bounded(prepare_edges(graph, edge_filter=edge_filter))
+    depth, reached, preds, origins = _shortest_path_dag(
+        edges,
+        daft.from_pydict({ID: [source]}),
+        daft.from_pydict({ID: [target]}),
+        max_path_length,
+    )
+    if depth is None or reached is None:
+        return []
+    reached_ids = sorted(int(x) for x in reached.select(col(ID)).collect().to_pydict()[ID])
+    return [list(path) for path in _enumerate_paths(reached_ids, origins, preds, max_paths)]
 
 
 _VID = "__vid"
@@ -151,38 +148,35 @@ def _edge_struct_lookup(edges: DataFrame, *, directed: bool) -> DataFrame:
 
 
 def _shortest_path_dag(
-    edges: DataFrame, sources: set[int], targets: set[int], max_path_length: int
-) -> tuple[int | None, list[int], dict[int, int], dict[int, list[int]]]:
-    """Multi source BFS returning the shortest distance to any target.
+    edges: DataFrame, sources: DataFrame, targets: DataFrame, max_path_length: int
+) -> tuple[int | None, DataFrame | None, dict[int, list[int]], set[int]]:
+    """Multi source BFS returning the shortest path sub DAG to any target.
 
-    Returns ``(depth, reached, dist, preds)``: ``depth`` is the shortest distance
-    from any source to any target (None if none is reached within
-    ``max_path_length``), ``reached`` is the sorted targets at that distance,
-    ``dist`` maps each visited vertex to its distance, and ``preds`` maps each
-    visited non source vertex to all of its shortest path predecessors.
+    The search runs inside Daft via :func:`bfs_levels`, then only the sub DAG that
+    leads to a reached target is collected, so driver memory scales with the
+    answer rather than with the graph.
+
+    Args:
+        edges: Materialized ``(src, dst)`` edge frame, already oriented.
+        sources: One column ``id`` frame of starting vertices.
+        targets: One column ``id`` frame of goal vertices.
+        max_path_length: Maximum hops to expand.
+
+    Returns:
+        ``(depth, reached, preds, origins)``: ``depth`` is the shortest distance
+        from any source to any target (None if none was reached), ``reached`` is a
+        one column ``id`` frame of the targets at that distance, ``preds`` maps
+        each sub DAG vertex to its sorted predecessors, and ``origins`` is the set
+        of sources those paths start from.
     """
-    dist: dict[int, int] = {s: 0 for s in sources}
-    preds: dict[int, list[int]] = {}
-    frontier = sorted(sources)
-    for level in range(1, max_path_length + 1):
-        if not frontier:
-            break
-        adjacency = neighbors(edges, frontier)
-        newly: dict[int, list[int]] = defaultdict(list)
-        for u in frontier:
-            for v in adjacency.get(u, []):
-                if v not in dist:
-                    newly[v].append(u)
-        if not newly:
-            break
-        for v, ps in newly.items():
-            dist[v] = level
-            preds[v] = sorted(set(ps))
-        reached = sorted(set(newly) & targets)
-        if reached:
-            return level, reached, dist, preds
-        frontier = sorted(newly)
-    return None, [], dist, preds
+    levels, depth = bfs_levels(edges, sources, max_hops=max_path_length, targets=targets)
+    if depth is None or levels is None:
+        return None, None, {}, set()
+    reached = (
+        levels.where(col(DIST) == lit(depth)).select(col(ID)).distinct().join(targets, on=ID, how="semi").collect()
+    )
+    preds, origins = prune_to_dag(levels, reached, depth)
+    return depth, reached, preds, origins
 
 
 def _enumerate_paths(
@@ -259,20 +253,29 @@ def bfs_paths(
         columns ``from`` and ``to`` is returned when no target is reachable within
         ``max_path_length``.
 
+    Note:
+        The search is driver mediated: the matched source and target vertex sets
+        are collected into the driver, and each hop pulls the current frontier's
+        adjacency in as well. Frontier width is not bounded by ``max_path_length``, so on a
+        large well connected graph the frontier can reach a sizeable fraction of
+        the graph within a few hops. Keep the hop count tight, narrow the search
+        with ``edge_filter``, or use :func:`daft_graph.shortest_paths` (which
+        stays in Daft) for whole graph distances.
+
     Raises:
         ValueError: if the number of shortest paths exceeds ``max_paths``.
     """
-    sources = {int(x) for x in graph.vertices.where(from_filter).select(ID).distinct().collect().to_pydict()[ID]}
-    targets = {int(x) for x in graph.vertices.where(to_filter).select(ID).distinct().collect().to_pydict()[ID]}
-    if not sources or not targets:
+    sources = graph.vertices.where(from_filter).select(col(ID)).distinct()
+    targets = graph.vertices.where(to_filter).select(col(ID)).distinct()
+    if sources.count_rows() == 0 or targets.count_rows() == 0:
         return daft.from_pydict({"from": [], "to": []})
 
     full_edges = graph.edges if edge_filter is None else graph.edges.where(edge_filter)
     vlk = _vertex_struct_lookup(graph.vertices)
 
-    overlap = sources & targets
-    if overlap:
-        result = daft.from_pydict({"__p0": sorted(overlap)})
+    overlap = sources.join(targets, on=ID, how="semi")
+    if overlap.count_rows() > 0:
+        result = overlap.select(col(ID).alias("__p0"))
         result = result.join(
             vlk.select(col(_VID).alias("__p0"), col(_VSTRUCT).alias("from")),
             on="__p0",
@@ -284,12 +287,13 @@ def bfs_paths(
         )
         return result.select("from", "to")
 
-    traversal = graph._orient(full_edges.select(SRC, DST))
-    depth, reached, _dist, preds = _shortest_path_dag(traversal, sources, targets, max_path_length)
-    if depth is None:
+    traversal = collect_bounded(graph.orient(full_edges.select(SRC, DST)))
+    depth, reached, preds, origins = _shortest_path_dag(traversal, sources, targets, max_path_length)
+    if depth is None or reached is None:
         return daft.from_pydict({"from": [], "to": []})
 
-    paths = _enumerate_paths(reached, sources, preds, max_paths)
+    reached_ids = sorted(int(x) for x in reached.select(col(ID)).collect().to_pydict()[ID])
+    paths = _enumerate_paths(reached_ids, origins, preds, max_paths)
     pcols: dict[str, Any] = {f"__p{i}": [path[i] for path in paths] for i in range(depth + 1)}
     result = daft.from_pydict(pcols)
     for i in range(depth + 1):
@@ -298,7 +302,7 @@ def bfs_paths(
             on=f"__p{i}",
             how="left",
         )
-    elk = _edge_struct_lookup(full_edges, directed=graph._directed)
+    elk = _edge_struct_lookup(full_edges, directed=graph.is_directed)
     for i in range(depth):
         keys: list[str | Expression] = [f"__p{i}", f"__p{i + 1}"]
         result = result.join(

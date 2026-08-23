@@ -56,7 +56,7 @@ def svd_plus_plus(
     Takes a :class:`DirectedGraph` because the rating edges are inherently
     directional (``src`` is the user, ``dst`` is the item). Unlike pagerank or
     SCC the body does not orient or symmetrize; the type documents the column
-    convention rather than an ``_orient`` based behavior difference.
+    convention rather than an ``orient`` based behavior difference.
 
     Raises:
         ImportError: If the optional ``local`` extra is not installed.

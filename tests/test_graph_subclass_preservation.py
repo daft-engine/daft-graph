@@ -54,7 +54,7 @@ def test_transforms_keep_traversal_semantics(flavor: type[Graph]) -> None:
     """A rebuilt graph must walk edges the same way the original did."""
     g = _build(flavor)
     rebuilt = g.filter_edges(col("weight") >= 1.0)
-    assert rebuilt._traversal_edges().count_rows() == g._traversal_edges().count_rows()
+    assert rebuilt.traversal_edges().count_rows() == g.traversal_edges().count_rows()
 
 
 @pytest.mark.parametrize("flavor", _FLAVORS)

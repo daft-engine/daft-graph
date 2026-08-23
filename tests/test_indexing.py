@@ -124,4 +124,4 @@ def test_reindexed_undirected_graph_keeps_undirected_traversal() -> None:
     assert isinstance(indexed.graph, UndirectedGraph)
     # symmetrized at traversal, so one stored edge walks both ways
     assert indexed.graph.edges.count_rows() == 1
-    assert indexed.graph._traversal_edges().count_rows() == 2
+    assert indexed.graph.traversal_edges().count_rows() == 2
