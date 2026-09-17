@@ -12,6 +12,7 @@ from __future__ import annotations
 import daft
 import pytest
 from daft import DataFrame, col
+from typing_extensions import Self
 
 from daft_graph import DirectedGraph, all_shortest_paths, bfs, bfs_paths
 from daft_graph.schema import DST, ID, SRC
@@ -23,7 +24,7 @@ class _PullCounter:
     def __init__(self) -> None:
         self.rows = 0
 
-    def __enter__(self) -> _PullCounter:
+    def __enter__(self) -> Self:
         self._orig = DataFrame.to_pydict
         counter = self
 
