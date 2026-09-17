@@ -12,6 +12,15 @@ authors = []
 maintainers = []
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
+keywords = ["daft", "graph", "connected components", "pagerank", "graphframes"]
+
+[project.optional-dependencies]
+# The single node solves (connected_components strategy="local", svd_plus_plus)
+# use numpy and scipy. Keep them optional so the core install is daft only.
+local = [
+  "numpy>=1.24",
+  "scipy>=1.11"
+]
 
 [project.urls]
 
@@ -20,17 +29,39 @@ dev = [
   "pre-commit==4.6.0",
   "pytest==9.1.1",
   "ruff==0.15.20",
-  "mypy==2.1.0"
+  "mypy==2.1.0",
+  # test-only: numpy/scipy exercise the local solves; igraph and networkx are
+  # correctness oracles. igraph is GPL and stays test only, never a runtime dep.
+  "numpy>=1.24",
+  "scipy>=1.11",
+  "igraph>=0.11",
+  "networkx>=3.0",
+  # type-check only: graph.py imports Self from here under TYPE_CHECKING for the
+  # 3.10 target. Declared explicitly rather than relying on transitive resolution.
+  "typing_extensions>=4.0"
 ]
 
 [tool.hatch.version]
 source = "vcs"
 
 [tool.mypy]
-files = ["daft_graph/**/*.py", "tests/**/*.py"]
+# The library is the type-checked surface. Tests build graphs from dynamic daft
+# expressions (e.g. col("id") != 3) whose comparison operators daft does not type
+# as Expression, which would drown real errors in false positives, so tests are
+# validated by pytest rather than mypy.
+files = ["daft_graph/**/*.py"]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "numpy.*"]
+ignore_missing_imports = true
+# Treat the optional numeric deps as Any without parsing their stubs. numpy's
+# bundled stubs use 3.12 `type` statement syntax that mypy rejects under the 3.10
+# target, and these are only used lazily inside the local solves.
+follow_imports = "skip"
+follow_imports_for_stubs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -46,7 +46,7 @@ ignore = [
 preview = true
 
 [lint.isort]
-known-first-party = ["daft_ext_template"]
+known-first-party = ["daft_graph"]
 known-third-party = ["daft"]
 required-imports = ["from __future__ import annotations"]
 

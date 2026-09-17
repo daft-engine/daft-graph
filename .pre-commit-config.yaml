@@ -38,7 +38,14 @@ repos:
   rev: v2.1.0
   hooks:
   - id: mypy                           # Static type checker for Python
-    additional_dependencies: [daft>=0.7.5]
+    additional_dependencies: [daft>=0.7.5, typing_extensions]
+    # Scope to the library, matching [tool.mypy] files in pyproject.toml. This
+    # hook passes filenames explicitly, which overrides that setting, so the
+    # exclude has to be repeated here. Tests build graphs from daft expressions
+    # (e.g. `col("id") != 3`), which daft's stubs type as `bool` rather than
+    # `Expression`, so type-checking them reports dozens of false positives that
+    # would drown real errors.
+    exclude: ^tests/
 
   # Check that uv.lock is up to date with pyproject.toml
 - repo: https://github.com/astral-sh/uv-pre-commit
