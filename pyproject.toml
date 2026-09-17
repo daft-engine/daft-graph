@@ -23,6 +23,7 @@ local = [
 ]
 
 [project.urls]
+repository = "https://github.com/daft-engine/daft-graph"
 
 [dependency-groups]
 dev = [
